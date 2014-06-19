@@ -73,7 +73,9 @@ class DrupalWrapper implements DrupalWrapperInterface
             $this->response = new Response();
         }
 
-        $this->response->setContent(ob_get_contents());
+        $content = ob_get_contents();
+        ob_end_clean();
+        if ($content) $this->response->setContent($content);
         $this->response->send();
     }
 
@@ -98,7 +100,7 @@ class DrupalWrapper implements DrupalWrapperInterface
     /**
      * @return DrupalKernel
      */
-    private function bootDrupalKernel()
+    private function bootDrupalKernel(Request $request=null)
     {
         $currentDir = getcwd();
         chdir($this->drupalDir);
@@ -113,7 +115,12 @@ class DrupalWrapper implements DrupalWrapperInterface
         $drupalKernel = new DrupalKernel('prod', drupal_classloader());
         $drupalKernel->boot();
 
-
+        // Create a request object from the HttpFoundation.
+        if ($request) {
+            $container = \Drupal::getContainer();
+            $container->set('request', $request);
+            $container->get('request_stack')->push($request);
+        }
 
         \drupal_bootstrap(DRUPAL_BOOTSTRAP_CODE);
 
@@ -128,7 +135,7 @@ class DrupalWrapper implements DrupalWrapperInterface
     public function getDrupalKernel()
     {
         if (null === $this->drupalKernel) {
-            $this->drupalKernel = $this->bootDrupalKernel();
+            throw new \Exception("Please bootstrap the kernel first");
         }
 
         return $this->drupalKernel;
@@ -153,11 +160,21 @@ class DrupalWrapper implements DrupalWrapperInterface
         $currentDir = getcwd();
         chdir($this->drupalDir);
 
-        $drupalKernel = $this->getDrupalKernel();
+        // Handle install request
+        if ($request->getPathInfo() == '/core/install.php') {
+            define('MAINTENANCE_MODE', 'install');
+            require_once $this->drupalDir . '/core/includes/install.core.inc';
+            install_drupal();
+            exit;
+        }
+        else {
+            $this->drupalKernel = $this->bootDrupalKernel($request);
+            $drupalKernel = $this->getDrupalKernel();
 
-        $response = $drupalKernel->handle($request);
-        $response = $response->prepare($request);
-        $drupalKernel->terminate($request, $response);
+            $response = $drupalKernel->handle($request);
+            $response = $response->prepare($request);
+            $drupalKernel->terminate($request, $response);
+        }
 
         // if we are still here, there were no exit() used in Drupal code, we can unregister our shutdown_function
         $this->catchExit = false;
@@ -168,7 +185,7 @@ class DrupalWrapper implements DrupalWrapperInterface
 
         chdir($currentDir);
 
-        ob_end_clean();
+        @ob_end_clean();
 
         return $response;
     }
